@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="az">
+<head>
+<meta charset="utf-8">
+<title>Kontakt Home – kampaniya videosu</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1A1A1A; color: #fff; font-family: "Segoe UI", Arial, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+  canvas { height: calc(100vh - 90px); aspect-ratio: 9 / 16; background: #000; border-radius: 10px; }
+  .idare { display: flex; gap: 12px; align-items: center; width: min(560px, 92vw); }
+  button { font: 600 16px "Segoe UI"; padding: 8px 18px; border: 0; border-radius: 8px; background: #FF0A47; color: #fff; cursor: pointer; }
+  input[type=range] { flex: 1; accent-color: #FF0A47; }
+  #vaxt { font-variant-numeric: tabular-nums; min-width: 92px; text-align: right; }
+  body.render canvas, body.yoxla canvas { height: auto; width: 1080px; border-radius: 0; }
+  body.render .idare, body.yoxla .idare { display: none; }
+</style>
+</head>
+<body>
+<canvas id="kanva" width="1080" height="1920"></canvas>
+<div class="idare">
+  <button id="oyna">▶ Oynat</button>
+  <input id="surgu" type="range" min="0" max="43" step="0.01" value="0">
+  <span id="vaxt">0.00 / 43</span>
+</div>
+<script src="personaj.js"></script>
+<script src="sesler.js"></script>
+<script src="video.js"></script>
+<script>
+const kanva = document.getElementById('kanva');
+const ctx = kanva.getContext('2d');
+const param = new URLSearchParams(location.search);
+const KADR_SAYI = Math.round(VAXT.son * FPS);
+let sesBuf = null;
+
+async function sesYukle() {
+  const data = await (await fetch('ses.mp3')).arrayBuffer();
+  sesBuf = await new OfflineAudioContext(1, 1, 44100).decodeAudioData(data);
+  AGIZ = agizZerfi(sesBuf, FPS, VAXT.ofset, KADR_SAYI + 1);
+}
+
+async function gonder(url, body, tip = 'application/json') {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': tip }, body });
+  if (!r.ok) throw new Error(url + ' → ' + r.status);
+}
+
+// MP4 üçün: əvvəl səsi, sonra bütün kadrları serverə göndərir
+async function renderEt() {
+  document.body.className = 'render';
+  const oc = new OfflineAudioContext(2, Math.ceil(VAXT.son * 44100), 44100);
+  sesQur(oc, sesBuf, 0, 0);
+  const buf = await oc.startRendering();
+  await gonder('/ses', wavYarat(buf), 'application/octet-stream');
+
+  const PAKET = 15;
+  for (let k = 0; k < KADR_SAYI; k += PAKET) {
+    const paket = [];
+    for (let i = k; i < Math.min(KADR_SAYI, k + PAKET); i++) {
+      kadrCek(ctx, i / FPS);
+      paket.push(kanva.toDataURL('image/jpeg', 0.93).split(',')[1]);
+    }
+    await gonder('/kadrlar/' + k, JSON.stringify(paket));
+  }
+  await gonder('/bitir', '{}');
+}
+
+// Yoxlama üçün seçilmiş anların şəkilləri
+async function yoxla(siyahi) {
+  document.body.className = 'yoxla';
+  for (const t of siyahi) {
+    kadrCek(ctx, t);
+    await gonder('/yoxla/' + t, JSON.stringify([kanva.toDataURL('image/jpeg', 0.9).split(',')[1]]));
+  }
+  await gonder('/bitir', '{}');
+}
+
+// ---- önizləmə ----
+let ac = null, t0 = 0, oynayir = false;
+const surgu = document.getElementById('surgu'), vaxtEl = document.getElementById('vaxt'), oynaBtn = document.getElementById('oyna');
+
+function dayandir() {
+  if (ac) { ac.close(); ac = null; }
+  oynayir = false; oynaBtn.textContent = '▶ Oynat';
+}
+function oynat(basla) {
+  dayandir();
+  if (basla >= VAXT.son - 0.05) basla = 0;
+  ac = new AudioContext();
+  t0 = ac.currentTime + 0.08 - basla;
+  sesQur(ac, sesBuf, t0, basla);
+  oynayir = true; oynaBtn.textContent = '⏸ Dayan';
+}
+function dovr() {
+  let t = Number(surgu.value);
+  if (oynayir && ac) {
+    t = Math.max(0, ac.currentTime - t0);
+    if (t >= VAXT.son) { t = VAXT.son; dayandir(); }
+    surgu.value = t;
+  }
+  kadrCek(ctx, Math.min(t, VAXT.son - 1 / FPS));
+  vaxtEl.textContent = t.toFixed(2) + ' / ' + VAXT.son;
+  requestAnimationFrame(dovr);
+}
+
+(async () => {
+  try {
+    await hazirliq();
+    await sesYukle();
+    if (param.has('render')) return await renderEt();
+    if (param.has('yoxla')) return await yoxla(param.get('yoxla').split(',').map(Number));
+    oynaBtn.onclick = () => oynayir ? dayandir() : oynat(Number(surgu.value));
+    surgu.oninput = () => { if (oynayir) oynat(Number(surgu.value)); };
+    dovr();
+  } catch (e) {
+    console.error(e);
+    fetch('/xeta', { method: 'POST', body: String(e && e.stack || e) }).catch(() => {});
+    document.body.insertAdjacentHTML('beforeend', '<p style="color:#f66">Xəta: ' + e.message + '</p>');
+  }
+})();
+</script>
+</body>
+</html>
